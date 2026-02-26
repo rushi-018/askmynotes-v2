@@ -335,8 +335,8 @@ class RAGEngine:
         }
 
     # ------------------------------------------------------ file / subject queries
-    def get_files_for_subject(self, subject_id: str) -> list[str]:
-        """Return unique file names stored for *subject_id* in Qdrant."""
+    def get_files_for_subject(self, subject_id: str) -> dict:
+        """Return unique file names and total chunk count for *subject_id*."""
         scroll_result = self.qdrant_client.scroll(
             collection_name=COLLECTION_NAME,
             scroll_filter=Filter(
@@ -358,7 +358,7 @@ class RAGEngine:
             fn = payload.get("file_name")
             if fn:
                 seen.add(fn)
-        return sorted(seen)
+        return {"files": sorted(seen), "chunk_count": len(points)}
 
     def get_subjects(self) -> list[str]:
         """Return unique subject_id values present in the collection."""

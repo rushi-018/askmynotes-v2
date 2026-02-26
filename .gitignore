@@ -11,6 +11,10 @@ __pycache__/
 # Qdrant local storage
 qdrant_storage/
 
+# Node
+node_modules/
+package-lock.json
+
 # IDE
 .vscode/
 .idea/

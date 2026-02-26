@@ -283,14 +283,18 @@ async def reset_collection():
 # ---------------------------------------------------------------------------
 @app.get("/files/{subject_id}")
 async def list_files(subject_id: str):
-    """Return unique file names indexed under *subject_id*."""
+    """Return unique file names and chunk count indexed under *subject_id*."""
     engine = _engine()
     try:
-        files = engine.get_files_for_subject(subject_id.strip())
+        result = engine.get_files_for_subject(subject_id.strip())
     except Exception as exc:
         logger.exception("Failed to list files for '%s'", subject_id)
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"subject_id": subject_id, "files": files}
+    return {
+        "subject_id": subject_id,
+        "files": result["files"],
+        "chunk_count": result["chunk_count"],
+    }
 
 
 # ---------------------------------------------------------------------------
