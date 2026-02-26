@@ -3,19 +3,27 @@ main.py – FastAPI application for AskMyNotes Study Copilot.
 
 Endpoints
 ---------
-POST /upload      – Upload a PDF for a given subject.
-POST /chat        – Ask a question scoped to a subject.
-POST /study_mode  – Generate quiz questions from a subject's notes.
+POST /upload       – Upload a PDF or TXT file for a given subject.
+POST /chat         – Ask a question scoped to a subject.
+POST /study_mode   – Generate quiz questions from a subject's notes.
+POST /voice-chat   – Voice Teacher: STT → RAG → TTS pipeline.
+GET  /files/{sid}  – List uploaded files for a subject.
+GET  /subjects     – List subjects with indexed notes.
+DELETE /reset      – Wipe the vector store.
+GET  /health       – Liveness probe.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from rag_engine import RAGEngine
@@ -56,7 +64,7 @@ class ChatResponse(BaseModel):
     answer: str
     citations: list[Citation]
     confidence: str = Field(
-        ..., description="'High' or 'Low' confidence in the answer."
+        ..., description="'High', 'Medium', or 'Low' confidence in the answer."
     )
 
 
@@ -69,11 +77,13 @@ class MCQ(BaseModel):
     options: list[str]
     correct_answer: str
     explanation: str = ""
+    citation: str = Field("", description="Source reference, e.g. 'File.pdf, Page 2'.")
 
 
 class ShortAnswer(BaseModel):
     question: str
     expected_answer: str
+    citation: str = Field("", description="Source reference, e.g. 'File.pdf, Page 3'.")
 
 
 class StudyModeResponse(BaseModel):
@@ -134,29 +144,60 @@ def _engine() -> RAGEngine:
 
 
 # ---------------------------------------------------------------------------
-# POST /upload
+# POST /upload  (PDF + TXT)
 # ---------------------------------------------------------------------------
+ALLOWED_EXTENSIONS = {".pdf", ".txt"}
+MAX_SUBJECTS = 3
+
+
 @app.post("/upload", response_model=UploadResponse)
-async def upload_pdf(
-    file: UploadFile = File(..., description="PDF file to upload."),
+async def upload_file(
+    file: UploadFile = File(..., description="PDF or TXT file to upload."),
     subject_id: str = Form(..., description="Subject this file belongs to."),
 ):
-    """Parse and ingest a PDF into the vector store for the given subject."""
+    """Parse and ingest a PDF or plain-text file into the vector store."""
     engine = _engine()
 
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+    # ---- Enforce exactly-3-subject cap ----
+    existing_subjects = engine.get_subjects()
+    sid = subject_id.strip()
+    if sid not in existing_subjects and len(existing_subjects) >= MAX_SUBJECTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Maximum {MAX_SUBJECTS} subjects allowed. "
+                f"Current subjects: {', '.join(existing_subjects)}. "
+                "Delete /reset to start over or upload into an existing subject."
+            ),
+        )
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file name provided.")
+
+    ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {', '.join(ALLOWED_EXTENSIONS)} files are accepted.",
+        )
 
     try:
         file_bytes = await file.read()
         if len(file_bytes) == 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-        result = await engine.ingest_pdf(
-            file_bytes=file_bytes,
-            file_name=file.filename,
-            subject_id=subject_id.strip(),
-        )
+        if ext == ".pdf":
+            result = await engine.ingest_pdf(
+                file_bytes=file_bytes,
+                file_name=file.filename,
+                subject_id=subject_id.strip(),
+            )
+        else:  # .txt
+            result = await engine.ingest_txt(
+                file_bytes=file_bytes,
+                file_name=file.filename,
+                subject_id=subject_id.strip(),
+            )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
@@ -235,6 +276,101 @@ async def reset_collection():
         logger.exception("Reset failed")
         raise HTTPException(status_code=500, detail=f"Reset error: {exc}")
     return {"message": "Collection reset successfully. Please re-upload your PDFs."}
+
+
+# ---------------------------------------------------------------------------
+# GET /files/{subject_id}  – list files for a subject
+# ---------------------------------------------------------------------------
+@app.get("/files/{subject_id}")
+async def list_files(subject_id: str):
+    """Return unique file names indexed under *subject_id*."""
+    engine = _engine()
+    try:
+        files = engine.get_files_for_subject(subject_id.strip())
+    except Exception as exc:
+        logger.exception("Failed to list files for '%s'", subject_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"subject_id": subject_id, "files": files}
+
+
+# ---------------------------------------------------------------------------
+# GET /subjects  – list all subjects
+# ---------------------------------------------------------------------------
+@app.get("/subjects")
+async def list_subjects():
+    """Return all subject_id values that have indexed notes."""
+    engine = _engine()
+    try:
+        subjects = engine.get_subjects()
+    except Exception as exc:
+        logger.exception("Failed to list subjects")
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"subjects": subjects}
+
+
+# ---------------------------------------------------------------------------
+# POST /voice-chat  – Voice Teacher (STT → RAG → TTS)
+# ---------------------------------------------------------------------------
+@app.post("/voice-chat")
+async def voice_chat(
+    audio_file: UploadFile = File(..., description="Audio file with user's spoken question."),
+    subject_id: str = Form(..., description="Subject to search in."),
+    history: str = Form(
+        default="[]",
+        description='JSON-encoded conversation history: [{"role":"user","content":"..."}]',
+    ),
+):
+    """Voice Teacher pipeline: Whisper STT → RAG answer → TTS audio stream.
+
+    The response body is an ``audio/mpeg`` stream.
+    Text metadata (transcript, answer, citations) are sent in response headers:
+    - ``X-Transcript`` – the recognised speech text
+    - ``X-Answer`` – the LLM answer text
+    - ``X-Citations`` – JSON-encoded list of citation dicts
+    - ``X-Confidence`` – "High", "Medium", or "Low"
+    """
+    engine = _engine()
+
+    if not audio_file.filename:
+        raise HTTPException(status_code=400, detail="No audio file provided.")
+
+    # Parse history JSON from form field
+    try:
+        parsed_history: list[dict[str, str]] = json.loads(history)
+    except (json.JSONDecodeError, TypeError):
+        parsed_history = []
+
+    try:
+        audio_bytes = await audio_file.read()
+        if len(audio_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Audio file is empty.")
+
+        result = await engine.voice_chat(
+            audio_bytes=audio_bytes,
+            audio_filename=audio_file.filename,
+            subject_id=subject_id.strip(),
+            history=parsed_history or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Voice-chat failed for subject '%s'", subject_id)
+        raise HTTPException(status_code=500, detail=f"Voice-chat error: {exc}")
+
+    # Encode metadata into response headers (URL-encode to be header-safe)
+    headers = {
+        "X-Transcript": urllib.parse.quote(result["transcript"]),
+        "X-Answer": urllib.parse.quote(result["answer"]),
+        "X-Citations": urllib.parse.quote(json.dumps(result["citations"])),
+        "X-Confidence": result["confidence"],
+        "Access-Control-Expose-Headers": "X-Transcript, X-Answer, X-Citations, X-Confidence",
+    }
+
+    return StreamingResponse(
+        content=result["audio_iter"],
+        media_type="audio/mpeg",
+        headers=headers,
+    )
 
 
 # ---------------------------------------------------------------------------
