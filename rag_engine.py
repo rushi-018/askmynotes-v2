@@ -50,9 +50,9 @@ QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_DIM = 1536  # text-embedding-3-small output dimension
-SIMILARITY_THRESHOLD = 0.15  # very low – let the LLM judge relevance
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 64
+SIMILARITY_THRESHOLD = 0.15  # low – let the LLM judge relevance
+CHUNK_SIZE = 256
+CHUNK_OVERLAP = 40
 
 
 class RAGEngine:
@@ -121,10 +121,10 @@ class RAGEngine:
         file_name: str,
         subject_id: str,
     ) -> dict[str, Any]:
-        """Parse *file_bytes* (PDF), chunk, embed, and upsert into Qdrant.
+        """Parse *file_bytes* (PDF), chunk by paragraph, embed, and upsert.
 
-        Every chunk carries ``file_name``, ``page_number`` and ``subject_id``
-        in its metadata / Qdrant payload.
+        Every chunk carries ``file_name``, ``page_number``, ``line_start``,
+        ``line_end``, and ``subject_id`` in its metadata / Qdrant payload.
         """
         doc = fitz.open(stream=file_bytes, filetype="pdf")
 
@@ -138,49 +138,77 @@ class RAGEngine:
         if not pages:
             raise ValueError("The uploaded PDF contains no extractable text.")
 
-        # Build LlamaIndex TextNodes with metadata, split per-page so that
-        # each chunk inherits the correct page_number and line numbers.
+        # ------ Paragraph-aware chunking ------
+        # 1) Split each page into paragraphs (double-newline or heading gaps)
+        # 2) Then use SentenceSplitter only on paragraphs that exceed CHUNK_SIZE
         splitter = SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
         all_nodes: list[TextNode] = []
 
         for page_data in pages:
             page_text = page_data["text"]
+            page_number = page_data["page_number"]
             page_lines = page_text.split("\n")
 
-            page_doc = Document(
-                text=page_text,
-                metadata={
-                    "file_name": file_name,
-                    "page_number": page_data["page_number"],
-                    "subject_id": subject_id,
-                },
-            )
-            nodes = splitter.get_nodes_from_documents([page_doc])
+            # Split into paragraphs: a paragraph ends at a blank line or
+            # a line that looks like a heading (short, possibly uppercase).
+            paragraphs: list[dict] = []
+            current_lines: list[str] = []
+            current_start_line = 1  # 1-based
 
-            # Compute line numbers for each chunk
-            for node in nodes:
-                node.metadata["file_name"] = file_name
-                node.metadata["page_number"] = page_data["page_number"]
-                node.metadata["subject_id"] = subject_id
+            for line_idx, line in enumerate(page_lines):
+                stripped = line.strip()
+                if stripped == "":
+                    # Blank line → flush current paragraph
+                    if current_lines:
+                        paragraphs.append({
+                            "text": "\n".join(current_lines),
+                            "line_start": current_start_line,
+                            "line_end": current_start_line + len(current_lines) - 1,
+                        })
+                        current_lines = []
+                    current_start_line = line_idx + 2  # next line is 1-based
+                else:
+                    if not current_lines:
+                        current_start_line = line_idx + 1  # 1-based
+                    current_lines.append(line)
 
-                # Find the starting position of this chunk in the page
-                chunk_text_start = node.text[:80].strip()
-                line_start = 1
-                line_end = len(page_lines)
-                for i, line in enumerate(page_lines):
-                    if chunk_text_start[:40] in line:
-                        line_start = i + 1  # 1-based
-                        break
-                # Estimate end line from chunk length
-                chunk_line_count = node.text.count("\n") + 1
-                line_end = min(line_start + chunk_line_count - 1, len(page_lines))
+            # Flush remaining
+            if current_lines:
+                paragraphs.append({
+                    "text": "\n".join(current_lines),
+                    "line_start": current_start_line,
+                    "line_end": current_start_line + len(current_lines) - 1,
+                })
 
-                node.metadata["line_start"] = line_start
-                node.metadata["line_end"] = line_end
+            # For each paragraph, create one or more chunks
+            for para in paragraphs:
+                para_text = para["text"].strip()
+                if not para_text:
+                    continue
 
-                # Keep internal IDs out of the text sent to the LLM
-                node.excluded_llm_metadata_keys = ["subject_id", "line_start", "line_end"]
-            all_nodes.extend(nodes)
+                # If the paragraph is short enough, make it a single node
+                para_doc = Document(
+                    text=para_text,
+                    metadata={
+                        "file_name": file_name,
+                        "page_number": page_number,
+                        "subject_id": subject_id,
+                        "line_start": para["line_start"],
+                        "line_end": para["line_end"],
+                    },
+                )
+                chunks = splitter.get_nodes_from_documents([para_doc])
+
+                for chunk in chunks:
+                    chunk.metadata["file_name"] = file_name
+                    chunk.metadata["page_number"] = page_number
+                    chunk.metadata["subject_id"] = subject_id
+                    chunk.metadata["line_start"] = para["line_start"]
+                    chunk.metadata["line_end"] = para["line_end"]
+                    chunk.excluded_llm_metadata_keys = [
+                        "subject_id", "line_start", "line_end",
+                    ]
+                all_nodes.extend(chunks)
 
         # Upsert via LlamaIndex → QdrantVectorStore
         storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
@@ -231,7 +259,7 @@ class RAGEngine:
             ]
         )
         retriever = index.as_retriever(
-            similarity_top_k=5,
+            similarity_top_k=8,
             filters=metadata_filters,
         )
 
@@ -345,6 +373,20 @@ class RAGEngine:
             "citations": citations,
             "confidence": confidence,
         }
+
+    # --------------------------------------------------------- reset
+    def reset_collection(self) -> None:
+        """Delete and recreate the Qdrant collection (wipes all vectors)."""
+        if self.qdrant_client.collection_exists(COLLECTION_NAME):
+            self.qdrant_client.delete_collection(COLLECTION_NAME)
+            logger.info("Deleted collection '%s'", COLLECTION_NAME)
+        self.qdrant_client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(
+                size=EMBEDDING_DIM, distance=Distance.COSINE
+            ),
+        )
+        logger.info("Recreated collection '%s'", COLLECTION_NAME)
 
     # ----------------------------------------------------------- study mode
     async def generate_study_questions(

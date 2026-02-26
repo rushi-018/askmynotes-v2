@@ -223,6 +223,21 @@ async def study_mode(body: StudyModeRequest):
 
 
 # ---------------------------------------------------------------------------
+# DELETE /reset  – wipe vector store
+# ---------------------------------------------------------------------------
+@app.delete("/reset")
+async def reset_collection():
+    """Delete all vectors and recreate the Qdrant collection."""
+    engine = _engine()
+    try:
+        engine.reset_collection()
+    except Exception as exc:
+        logger.exception("Reset failed")
+        raise HTTPException(status_code=500, detail=f"Reset error: {exc}")
+    return {"message": "Collection reset successfully. Please re-upload your PDFs."}
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 @app.get("/health")
