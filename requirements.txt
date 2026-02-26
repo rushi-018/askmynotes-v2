@@ -1,0 +1,22 @@
+fastapi==0.133.1
+uvicorn==0.41.0
+python-dotenv==1.2.1
+python-multipart==0.0.22
+
+# LlamaIndex Core
+llama-index-core==0.14.15
+llama-index-llms-openai==0.6.21
+llama-index-embeddings-openai==0.5.1
+llama-index-vector-stores-qdrant==0.9.1
+
+# Qdrant
+qdrant-client==1.17.0
+
+# PDF Parsing
+PyMuPDF==1.27.1
+
+# OpenAI SDK (transitive, pinned for stability)
+openai==2.24.0
+
+# Pydantic
+pydantic==2.12.5

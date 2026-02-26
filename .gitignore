@@ -1,0 +1,16 @@
+# Environment
+.env
+
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Qdrant local storage
+qdrant_storage/
+
+# IDE
+.vscode/
+.idea/
