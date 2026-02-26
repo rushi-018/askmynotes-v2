@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AskMyNotes</title>
+<style>
+:root{--bg:#0f172a;--surface:#1e293b;--card:#283548;--primary:#6366f1;--primary-h:#818cf8;--text:#f1f5f9;--muted:#94a3b8;--danger:#ef4444;--success:#22c55e;--border:#334155;--radius:14px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column}
+
+/* -------- NAV -------- */
+nav{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between}
+nav h1{font-size:1.25rem;font-weight:700} nav h1 span{color:var(--primary-h)}
+.tabs{display:flex;gap:4px}
+.tabs button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:7px 16px;border-radius:8px;cursor:pointer;font-size:.85rem;transition:.2s}
+.tabs button.active,.tabs button:hover{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+/* -------- PANELS -------- */
+.panel{display:none;flex:1;flex-direction:column;max-width:780px;width:100%;margin:0 auto;padding:20px}
+.panel.active{display:flex}
+
+/* -------- UPLOAD PANEL -------- */
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:40px;text-align:center;cursor:pointer;transition:.2s;margin-bottom:16px}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--primary);background:rgba(99,102,241,.08)}
+.upload-zone input{display:none}
+.upload-zone .icon{font-size:2.4rem;margin-bottom:8px}
+.upload-zone p{color:var(--muted);font-size:.9rem}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:4px}
+.field input,.field select{width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem;outline:none}
+.field input:focus{border-color:var(--primary)}
+.btn{padding:10px 22px;border:none;border-radius:8px;font-size:.95rem;font-weight:600;cursor:pointer;transition:.2s}
+.btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{background:var(--primary-h)}
+.btn-sm{padding:6px 14px;font-size:.8rem}
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:10px;color:#fff;font-size:.9rem;z-index:999;animation:slideIn .3s}
+.toast.ok{background:var(--success)}.toast.err{background:var(--danger)}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:none;opacity:1}}
+
+/* -------- VOICE PANEL -------- */
+#voice-setup{text-align:center;margin-top:60px}
+#voice-setup h2{margin-bottom:6px}
+#voice-setup p{color:var(--muted);font-size:.85rem;margin-bottom:18px}
+
+#voice-active{display:none;flex:1;flex-direction:column}
+#voice-active.show{display:flex}
+.voice-header{text-align:center;padding:10px 0;font-size:.82rem;color:var(--muted)}
+.voice-header strong{color:var(--primary-h)}
+
+#messages{flex:1;overflow-y:auto;padding:8px 0;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:82%;padding:12px 16px;border-radius:var(--radius);font-size:.93rem;line-height:1.55;white-space:pre-wrap;word-wrap:break-word}
+.msg.user{align-self:flex-end;background:var(--primary);color:#fff;border-bottom-right-radius:3px}
+.msg.bot{align-self:flex-start;background:var(--card);border:1px solid var(--border);border-bottom-left-radius:3px}
+.msg .meta{font-size:.7rem;color:var(--muted);margin-top:5px}
+.msg .citations{font-size:.75rem;color:var(--muted);margin-top:6px;border-top:1px solid var(--border);padding-top:5px}
+
+.voice-controls{padding:18px 0;display:flex;align-items:center;justify-content:center;gap:18px}
+.mic{width:68px;height:68px;border-radius:50%;border:none;cursor:pointer;background:var(--primary);color:#fff;font-size:1.7rem;display:flex;align-items:center;justify-content:center;transition:.15s;position:relative}
+.mic:hover{transform:scale(1.06)}
+.mic.recording{background:var(--danger);animation:pulse 1.2s infinite}
+.mic:disabled{opacity:.5;cursor:not-allowed;animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.5)}70%{box-shadow:0 0 0 20px rgba(239,68,68,0)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}}
+.status{font-size:.8rem;color:var(--muted);min-width:150px;text-align:center}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--muted);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:5px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* -------- SCROLLBAR -------- */
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <h1>Ask<span>My</span>Notes</h1>
+  <div class="tabs">
+    <button class="active" onclick="switchTab('upload')">📄 Upload</button>
+    <button onclick="switchTab('voice')">🎙️ Voice Chat</button>
+  </div>
+</nav>
+
+<!-- ============ UPLOAD PANEL ============ -->
+<div id="tab-upload" class="panel active">
+  <h2 style="margin-bottom:16px">Upload Notes</h2>
+
+  <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <input type="file" id="file-input" accept=".pdf"/>
+    <div class="icon">📄</div>
+    <p id="file-label">Click or drag a PDF here</p>
+  </div>
+
+  <div class="field">
+    <label>Subject ID</label>
+    <input id="upload-subject" type="text" placeholder="e.g. physics, biology, history …"/>
+  </div>
+
+  <button class="btn btn-primary" id="upload-btn" onclick="uploadPDF()">Upload & Index</button>
+
+  <div id="upload-result" style="margin-top:18px;display:none;background:var(--card);padding:16px;border-radius:var(--radius);font-size:.88rem;line-height:1.6"></div>
+</div>
+
+<!-- ============ VOICE PANEL ============ -->
+<div id="tab-voice" class="panel">
+
+  <!-- step 1: pick subject -->
+  <div id="voice-setup">
+    <h2>🎙️ Voice Chat</h2>
+    <p>Talk to your notes — ask questions and hear answers spoken back.</p>
+    <div class="field" style="max-width:340px;margin:0 auto 14px">
+      <input id="voice-subject" type="text" placeholder="Subject ID (e.g. physics)"/>
+    </div>
+    <button class="btn btn-primary" onclick="startVoice()">Start Conversation</button>
+  </div>
+
+  <!-- step 2: conversation -->
+  <div id="voice-active">
+    <div class="voice-header">Talking about <strong id="v-subject-label"></strong></div>
+    <div id="messages"></div>
+    <div class="voice-controls">
+      <span class="status" id="status">Tap the mic and speak</span>
+      <button class="mic" id="mic-btn" onclick="toggleMic()" title="Tap to speak">🎤</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = location.origin;
+let sessionId = null, subjectId = null;
+let recorder = null, chunks = [], recording = false, processing = false;
+
+/* -------- TAB SWITCHING -------- */
+function switchTab(name){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  document.querySelectorAll('.tabs button').forEach(b=>{if(b.textContent.toLowerCase().includes(name))b.classList.add('active')});
+}
+
+/* -------- TOAST -------- */
+function toast(msg,ok=true){const d=document.createElement('div');d.className='toast '+(ok?'ok':'err');d.textContent=msg;document.body.appendChild(d);setTimeout(()=>d.remove(),3500)}
+
+/* ============ UPLOAD ============ */
+const dropZone=document.getElementById('drop-zone'),fileInput=document.getElementById('file-input');
+fileInput.addEventListener('change',()=>{if(fileInput.files[0])document.getElementById('file-label').textContent=fileInput.files[0].name});
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('drag')});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('drag');if(e.dataTransfer.files[0]){fileInput.files=e.dataTransfer.files;document.getElementById('file-label').textContent=e.dataTransfer.files[0].name}});
+
+async function uploadPDF(){
+  const file=fileInput.files[0], subj=document.getElementById('upload-subject').value.trim();
+  if(!file){toast('Please select a PDF file',false);return}
+  if(!subj){toast('Please enter a subject ID',false);return}
+  const btn=document.getElementById('upload-btn');
+  btn.disabled=true;btn.textContent='Uploading…';
+  const fd=new FormData();fd.append('file',file);fd.append('subject_id',subj);
+  try{
+    const r=await fetch(API+'/upload',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Upload failed');
+    document.getElementById('upload-result').style.display='block';
+    document.getElementById('upload-result').innerHTML=
+      `✅ <strong>${d.file_name}</strong> uploaded to <strong>${d.subject_id}</strong><br>`+
+      `Pages: ${d.pages_processed} · Chunks: ${d.chunks_created}`;
+    toast('PDF uploaded successfully!');
+  }catch(e){toast(e.message,false)}
+  finally{btn.disabled=false;btn.textContent='Upload & Index'}
+}
+
+/* ============ VOICE ============ */
+function startVoice(){
+  subjectId=document.getElementById('voice-subject').value.trim();
+  if(!subjectId){document.getElementById('voice-subject').focus();return}
+  sessionId=null; // will auto-create on first call
+  document.getElementById('voice-setup').style.display='none';
+  document.getElementById('voice-active').classList.add('show');
+  document.getElementById('v-subject-label').textContent=subjectId;
+  document.getElementById('messages').innerHTML='';
+  setStatus('Tap the mic and speak');
+}
+
+async function toggleMic(){
+  if(processing)return;
+  recording?stopRec():await startRec();
+}
+
+async function startRec(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    chunks=[];
+    const mime=MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':'audio/webm';
+    recorder=new MediaRecorder(stream,{mimeType:mime});
+    recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+    recorder.onstop=()=>{stream.getTracks().forEach(t=>t.stop());onRecDone()};
+    recorder.start();
+    recording=true;
+    document.getElementById('mic-btn').classList.add('recording');
+    setStatus('🔴 Listening … tap again to stop');
+  }catch(e){toast('Microphone access denied',false)}
+}
+
+function stopRec(){
+  if(recorder&&recorder.state!=='inactive')recorder.stop();
+  recording=false;
+  document.getElementById('mic-btn').classList.remove('recording');
+}
+
+async function onRecDone(){
+  if(!chunks.length)return;
+  processing=true;
+  const btn=document.getElementById('mic-btn');
+  btn.disabled=true;
+  setStatus('<span class="spinner"></span>Thinking …');
+
+  const blob=new Blob(chunks,{type:recorder.mimeType||'audio/webm'});
+  const fd=new FormData();
+  fd.append('audio',blob,'recording.webm');
+  fd.append('subject_id',subjectId);
+  if(sessionId)fd.append('session_id',sessionId);
+
+  try{
+    const r=await fetch(API+'/voice/chat',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Request failed');
+
+    sessionId=d.session_id;
+    addMsg('user',d.transcript);
+    addMsg('bot',d.answer,d.confidence,d.citations);
+
+    // play audio — ElevenLabs MP3 or browser TTS fallback
+    if(d.audio_base64){
+      setStatus('<span class="spinner"></span>Speaking …');
+      await playB64(d.audio_base64);
+    } else {
+      setStatus('🔊 Speaking …');
+      await speakBrowser(d.answer);
+    }
+    setStatus('Tap the mic and speak');
+  }catch(e){
+    toast(e.message,false);
+    setStatus('⚠️ Error — try again');
+    setTimeout(()=>setStatus('Tap the mic and speak'),3000);
+  }finally{processing=false;btn.disabled=false}
+}
+
+/* -------- audio playback -------- */
+function playB64(b64){
+  return new Promise(res=>{
+    const a=new Audio('data:audio/mpeg;base64,'+b64);
+    a.onended=res;a.onerror=()=>{
+      // ElevenLabs audio failed to decode — fall back to browser TTS
+      speakBrowser(document.querySelector('.msg.bot:last-child')?.textContent||'').then(res);
+    };
+    a.play().catch(()=>{
+      speakBrowser(document.querySelector('.msg.bot:last-child')?.textContent||'').then(res);
+    });
+  });
+}
+
+/* -------- browser Web Speech TTS fallback -------- */
+function speakBrowser(text){
+  return new Promise(res=>{
+    if(!('speechSynthesis' in window)){res();return}
+    // cancel any queued speech
+    speechSynthesis.cancel();
+    const utt=new SpeechSynthesisUtterance(text);
+    utt.rate=1.05; utt.pitch=1;
+    // pick a good English voice if available
+    const voices=speechSynthesis.getVoices();
+    const preferred=voices.find(v=>v.lang.startsWith('en')&&v.name.includes('Female'))
+      ||voices.find(v=>v.lang.startsWith('en'))
+      ||voices[0];
+    if(preferred)utt.voice=preferred;
+    utt.onend=res; utt.onerror=res;
+    speechSynthesis.speak(utt);
+  });
+}
+
+/* -------- UI helpers -------- */
+function addMsg(role,text,confidence,citations){
+  const c=document.getElementById('messages'),d=document.createElement('div');
+  d.className='msg '+role;
+  d.textContent=text;
+  if(role==='bot'&&confidence){const m=document.createElement('div');m.className='meta';m.textContent='Confidence: '+confidence;d.appendChild(m)}
+  if(role==='bot'&&citations&&citations.length){
+    const ci=document.createElement('div');ci.className='citations';
+    ci.textContent='📎 '+citations.map(c=>`${c.file_name} p.${c.page_number}`).join(' · ');
+    d.appendChild(ci);
+  }
+  c.appendChild(d);c.scrollTop=c.scrollHeight;
+}
+function setStatus(h){document.getElementById('status').innerHTML=h}
+
+/* enter key */
+document.getElementById('voice-subject').addEventListener('keydown',e=>{if(e.key==='Enter')startVoice()});
+document.getElementById('upload-subject').addEventListener('keydown',e=>{if(e.key==='Enter')uploadPDF()});
+</script>
+</body>
+</html>
