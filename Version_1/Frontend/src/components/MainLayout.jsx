@@ -23,7 +23,7 @@ const MainLayout = () => {
             <Outlet />
         </div>
       </main>
-      <Chatbot/>
+      {/* <Chatbot/> */}
     </div>
   );
 };

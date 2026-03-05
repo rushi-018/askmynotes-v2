@@ -14,7 +14,7 @@ from database.postgresConn import get_db
 from models.all_model import User as UserModel
 from schemas.all_schema import TokenWithUser, UserCreate, ForgotPasswordRequest, VerifyOtpRequest, ResetPasswordRequest
 from auth import hashing, token
-from utilis.email_otp import send_otp_email
+from utils.email_otp import send_otp_email
 
 router = APIRouter(
     prefix="/api/auth",

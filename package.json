@@ -4,7 +4,7 @@
   "private": true,
   "description": "AskMyNotes – RAG Study Copilot (full-stack orchestrator)",
   "scripts": {
-    "start:rag": "cd . && .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload --port 8000",
+    "start:rag": "cd rag-service && ..\\venv\\Scripts\\python.exe -m uvicorn main:app --reload --port 8000",
     "start:auth": "cd Version_1\\Backend && .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload --port 8001",
     "start:frontend": "cd Version_1\\Frontend && npm run dev",
     "dev": "concurrently --names RAG,AUTH,UI -c blue,magenta,green \"npm run start:rag\" \"npm run start:auth\" \"npm run start:frontend\""

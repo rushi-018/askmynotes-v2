@@ -35,6 +35,10 @@ const SubjectHub = () => {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const historyRef = useRef([]);
+  const selectedSubjectRef = useRef(selectedSubject);
+
+  // Keep the ref in sync with state
+  useEffect(() => { selectedSubjectRef.current = selectedSubject; }, [selectedSubject]);
 
   // ── Fetch available subjects on mount ──
   useEffect(() => {
@@ -152,10 +156,19 @@ const SubjectHub = () => {
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        if (audioBlob.size === 0) {
+          setMessages((prev) => [...prev, {
+            id: Date.now(),
+            role: 'assistant',
+            content: 'Recording was empty. Please hold the mic button longer while speaking.',
+            type: 'text',
+          }]);
+          return;
+        }
         await sendVoiceChat(audioBlob);
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(250);
       setIsRecording(true);
     } catch (err) {
       console.error('Microphone access denied:', err);
@@ -182,16 +195,33 @@ const SubjectHub = () => {
   const sendVoiceChat = async (audioBlob) => {
     setIsVoiceProcessing(true);
 
+    const currentSubject = selectedSubjectRef.current;
+    if (!currentSubject) {
+      setMessages((prev) => [...prev, {
+        id: Date.now(),
+        role: 'assistant',
+        content: 'Please select a subject before using voice chat.',
+        type: 'text',
+      }]);
+      setIsVoiceProcessing(false);
+      return;
+    }
+
+    const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
     const form = new FormData();
-    form.append('audio_file', audioBlob, 'recording.webm');
-    form.append('subject_id', selectedSubject);
+    form.append('audio_file', audioFile);
+    form.append('subject_id', currentSubject);
     form.append('history', JSON.stringify(historyRef.current.slice(-10)));
 
     try {
       const res = await fetch('/voice-chat', { method: 'POST', body: form });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `Error ${res.status}`);
+        const detail = err.detail;
+        const msg = typeof detail === 'string' ? detail
+          : Array.isArray(detail) ? detail.map(d => d.msg || JSON.stringify(d)).join(', ')
+          : `Error ${res.status}`;
+        throw new Error(msg);
       }
 
       // Extract metadata from custom headers
@@ -222,7 +252,7 @@ const SubjectHub = () => {
 
       // Add bot answer message
       historyRef.current.push({ role: 'assistant', content: answer });
-      recordStudyEvent(selectedSubject, 'voice');
+      recordStudyEvent(currentSubject, 'voice');
       setMessages((prev) => [...prev, {
         id: Date.now() + 1,
         role: 'assistant',
